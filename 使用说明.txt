@@ -1,0 +1,80 @@
+知识库智能体平台 —— 完整独立构建包
+==========================================
+
+这是什么
+--------
+完整可独立构建的项目包:后端全部代码 + 预置样例数据(两个知识库已建好索引)
++ 预编译前端 + Dockerfile。解压到任意空目录即可构建,不依赖其他任何交付物。
+(此前发的"前端dist预编译构建包"是增量更新包,需覆盖到旧项目上使用;
+本包是自包含的,二者任选其一,别混用。)
+
+操作步骤
+--------
+  1. 解压本包到一个空目录,例如 D:\rag\
+  2. 进入该目录构建(单阶段 Dockerfile,全程不经过 npm/node,弱网更稳):
+       cd /d D:\rag
+       docker build -t rag-app .
+     (如需从源码重建前端:docker build -f Dockerfile.from-source -t rag-app .)
+  3. 运行(容器端口 3000;数据持久化到 docker 卷):
+       docker run -d --name rag-app -p 3000:3000 -v rag-data:/app/server/data rag-app
+  4. 浏览器访问 http://localhost:3000 ,账号 admin / admin123
+  5. 「系统管理」页填入 DeepSeek API Key 即可对话;
+     模型名填 deepseek-reasoner 可在聊天中展示「思考过程」,
+     填 deepseek-chat 则为普通模式(更快更省)。
+  6. 工具调用开箱即用:问「现在几点了」「帮我计算 128 乘 35」
+     「3月1日到5月30日相差几天」「月薪15000要交多少个税」
+     「15公里换算成英里」「时间戳1770000000是哪天」「我有哪些知识库」
+     「这份文档的目录结构」等都会走工具链路——内置 11 个常用工具,
+     全部免 Key、本地执行(「工具管理」页可关闭或换模型)。
+     有社区 MCP 服务时,在「系统管理」页粘贴 servers JSON 即可接入,
+     无需改代码。
+  7. 技能(Skills)开箱即用:内置「网页总结 / 会议纪要 / 知识库概况报告」
+     三个示例,试试「帮我把这段会议记录整理成纪要:……」。
+     「智能体编排」页可启停、删除或上传自己的技能(.md/.zip)。
+  8. 文档图片理解(新):上传的 PDF 里若有插图,构建索引时会用视觉模型
+     为每张图生成文字描述并参与检索;聊天引用来源处可直接查看原图。
+     视觉模型默认 deepseek-flash,可在「系统管理」页更换(须支持图片输入,
+     deepseek-v4-pro 不支持);「知识库与文档解析 → 检索设置」里可按库关闭
+     「图片描述」,改动后重建索引生效。
+  9. 业务系统数据对接(新):「工具管理」页可配置 REST 接口或数据库
+     (MySQL/PostgreSQL/SQLite)连接器,保存前可点「测试连接」预览返回
+     数据;启用后自动注册为智能体工具(biz_ 前缀),问答中按意图自动
+     调用,例如对接 MES 后问「查一下二车间的设备台账」。
+     数据库连接器强制只读(仅 SELECT/WITH 单语句),REST 限 http/https
+     与 GET/POST;每次调用均写审计日志(含操作人),管理入口仅
+     系统管理员/工作空间管理员可见。
+
+包内结构
+--------
+  Dockerfile / .dockerignore   一体化镜像构建文件(前端已预编译,构建全程无需 node/npm)
+  Dockerfile.from-source       可选:从源码全量重建前端的构建文件
+  dist/                        预编译前端产物
+  server/app/                  后端代码(FastAPI + LangGraph)
+  server/scripts/              集群档迁移/对账脚本(单机档用不到)
+  server/tests/                开发自测工具(mock LLM、49 项权限/对接/扫描件回归 regression.py)
+  server/requirements.txt      Python 依赖
+  server/data_seed/            内置知识库源文档(员工规章制度手册)
+  server/data/kbs/             内置知识库已解析数据(文档/切分/BM25/索引元信息)
+  server/data/milvus_lite.db   预建向量索引(Milvus Lite)
+  server/data/uploads/         上传目录(运行时写入)
+  README.md                    项目文档
+
+常见问题
+--------
+  - docker build 报 "/server": not found:压缩包没解压完整,请完整解压后
+    在包含 Dockerfile 的目录里构建。
+  - npm "Exit handler never called" / 拉取依赖超时:默认 Dockerfile 已不经过
+    npm,不会出现该错;若用 Dockerfile.from-source 遇到,重试即可(已加大
+    拉取重试与超时参数)。
+  - pip 下载慢属正常(首次约数分钟);中文向量模型已随包预置在
+    server/data/models(约 180MB),构建与首次运行均无需联网下载。
+
+注意
+----
+  - 首次启动会自动建库并写入 admin 与内置账号;数据都在 docker 卷 rag-data 里,
+    删容器不丢数据,docker volume rm rag-data 才会清空。
+  - 默认 docker run 命令挂载 rag-data 卷时,首次启动会把镜像内模型
+    一并初始化进卷,之后完全离线可用。
+  - 内置知识库不可删除;可在「知识库与文档解析」页重新上传自己的 PDF/DOCX/XLSX 并重建索引,即完成替换。
+  - 图片描述只在「构建索引」时生成一次并按库缓存,重建不会重复消耗额度;
+    未配置 API Key 时会自动跳过并在分段预览处提示。

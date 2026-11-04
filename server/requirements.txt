@@ -1,0 +1,36 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pymupdf>=1.24
+pymilvus>=2.5
+milvus-lite>=2.4; sys_platform == 'linux' and platform_machine == 'x86_64'
+fastembed>=0.4
+langchain-core>=0.3
+langchain-openai>=0.2
+langchain-text-splitters>=0.3
+langgraph>=0.2
+langgraph-checkpoint-sqlite>=2.0
+# 工具调用:MCP server 工具接入(MultiServerMCPClient);未配置 MCP 时不启用,装好即可
+langchain-mcp-adapters>=0.1
+tiktoken>=0.7
+rank_bm25>=0.2.2
+jieba>=0.42
+
+# ---- 路线二:cluster 档中间件(DEPLOY_PROFILE=cluster 时需要)----
+# 业务库/检查点:IvorySQL(兼容 PG 协议)。版本组合经过联调验证,勿单独升级:
+# psycopg 3.3 的 parameter_status 返回 bytes,与 SQLAlchemy 2.0/2.1 均不兼容。
+sqlalchemy==2.0.44
+psycopg[binary,pool]==3.2.13
+langgraph-checkpoint-postgres>=3.0
+# 缓存/锁/限流
+redis>=5.0
+# 异步任务
+celery>=5.4
+# 扫描件 OCR(整页渲染转录;模型随包内置,离线可用)
+rapidocr-onnxruntime>=1.4
+# 文档解析(docx/xlsx 上传)
+python-docx>=1.1
+openpyxl>=3.1
+# 业务系统数据对接(1.5):MySQL 只读查询驱动(PG/IvorySQL 复用 psycopg,SQLite 内置)
+requests>=2.31
+pymysql>=1.1

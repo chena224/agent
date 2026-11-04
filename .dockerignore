@@ -1,0 +1,14 @@
+node_modules
+.git
+server/data/settings.json
+server/data/memory.db*
+server/data/stats.db*
+server/data/uploads/*
+server/tests/*.txt
+server/tests/*.log
+server/__pycache__
+server/app/__pycache__
+**/__pycache__
+*.pyc
+server/data/users.db*
+server/data/app.db*

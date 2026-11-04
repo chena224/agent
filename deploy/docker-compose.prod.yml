@@ -1,0 +1,180 @@
+# 路线二 cluster 档生产编排:多实例可扩容
+# 用法:
+#   cp .env.example .env   # 按需修改(生产务必 SEED_DEMO_DATA=0 + ADMIN_PASSWORD=强口令)
+#   docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --build
+#   扩 web 实例:docker compose ... up -d --scale web=3
+# 首次部署后执行一次性检查点建表,之后可把 SKIP_CHECKPOINTER_SETUP 置 1:
+#   docker compose ... exec web python3 -c \
+#     "import sys; sys.path.insert(0,'server'); from app.agent import RAGAgent; RAGAgent.get().graph"
+services:
+  # ---------------- 接入层 ----------------
+  nginx:
+    image: nginx:1.27-alpine
+    ports: ["80:80"]
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on: [web]
+    restart: unless-stopped
+
+  # ---------------- 应用层(无状态,可水平扩) ----------------
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: rag-platform:latest
+    environment:
+      DEPLOY_PROFILE: cluster
+      DB_URI: ${DB_URI}
+      CHECKPOINT_DB_URI: ${CHECKPOINT_DB_URI}
+      SKIP_CHECKPOINTER_SETUP: ${SKIP_CHECKPOINTER_SETUP:-0}
+      REDIS_URL: ${REDIS_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+      MILVUS_URI: ${MILVUS_URI}
+      EMBEDDING_MODE: ${EMBEDDING_MODE:-tei}
+      TEI_URL: ${TEI_URL}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BACKUP_API_KEY: ${DEEPSEEK_BACKUP_API_KEY:-}
+      REFUSAL_LLM: ${REFUSAL_LLM:-0}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-0}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?生产必须设置 ADMIN_PASSWORD}
+      RATE_LIMIT_CHAT_PER_MIN: ${RATE_LIMIT_CHAT_PER_MIN:-60}
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-50}
+      DATA_DIR: /app/server/data
+      HF_ENDPOINT: https://hf-mirror.com
+    volumes:
+      - rag_data:/app/server/data        # 上传原文/解析缓存(多实例共享,可换 NFS/OSS)
+    depends_on:
+      ivorysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      milvus:
+        condition: service_healthy
+    restart: unless-stopped
+    # 不直接暴露端口,统一走 nginx
+
+  celery-worker:
+    image: rag-platform:latest
+    command: python3 -m celery -A app.tasks worker --loglevel=INFO --concurrency=2
+    working_dir: /app/server
+    environment:   # 与 web 同一份配置,保证任务上下文一致
+      DEPLOY_PROFILE: cluster
+      DB_URI: ${DB_URI}
+      CHECKPOINT_DB_URI: ${CHECKPOINT_DB_URI}
+      SKIP_CHECKPOINTER_SETUP: "1"       # worker 不参与 DDL
+      REDIS_URL: ${REDIS_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+      MILVUS_URI: ${MILVUS_URI}
+      EMBEDDING_MODE: ${EMBEDDING_MODE:-tei}
+      TEI_URL: ${TEI_URL}
+      DATA_DIR: /app/server/data
+      HF_ENDPOINT: https://hf-mirror.com
+    volumes:
+      - rag_data:/app/server/data
+    depends_on:
+      ivorysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      milvus:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------- 数据层 ----------------
+  ivorysql:
+    # IvorySQL 兼容 PG 协议;也可直接替换为 postgres:16-alpine(应用层无感)
+    image: ivorysql/ivorysql:4.5-ubi8
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag_password    # 与 DB_URI/CHECKPOINT_DB_URI 中的密码一致
+      POSTGRES_DB: rag_db
+      # 必须 UTF8:SQL_ASCII 下 psycopg 对文本列返回 bytes,SQLAlchemy 直接崩
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+    volumes:
+      - ivorysql_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  milvus:
+    image: milvusdb/milvus:v2.5.4
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.16
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - etcd_data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - minio_data:/minio_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  tei:
+    # HuggingFace Text Embeddings Inference(CPU 版);加载中文 BGE 向量模型
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    command: ["--model-id", "BAAI/bge-small-zh-v1.5", "--hostname", "0.0.0.0"]
+    volumes:
+      - tei_models:/data
+    restart: unless-stopped
+    profiles: ["tei"]      # EMBEDDING_MODE=tei 时:--profile tei 启动
+
+volumes:
+  rag_data:
+  ivorysql_data:
+  redis_data:
+  milvus_data:
+  etcd_data:
+  minio_data:
+  tei_models:
